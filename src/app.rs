@@ -13,6 +13,7 @@ const SIDEBAR_DEFAULT_WIDTH: f32 = 220.0;
 const SEARCH_MAX_RESULTS: usize = 100;
 use crate::scan::walker::{ScanMessage, scan_directory};
 use crate::treemap::layout::LayoutRect;
+use crate::ui::colors::FileCategory;
 use crate::ui::{breadcrumbs, sidebar, status_bar, treemap_view};
 
 #[derive(PartialEq)]
@@ -48,6 +49,9 @@ pub struct DiskApp {
     // Search
     search_query: String,
     search_results: Vec<usize>,
+
+    // Category size cache (root, data)
+    category_cache: Option<(usize, Vec<(FileCategory, u64)>)>,
 
     // Toast message
     toast_message: Option<(String, std::time::Instant)>,
@@ -94,6 +98,7 @@ impl DiskApp {
             trashed_paths: HashSet::new(),
             search_query: String::new(),
             search_results: Vec::new(),
+            category_cache: None,
             toast_message: None,
         };
 
@@ -122,6 +127,7 @@ impl DiskApp {
         self.current_scan_path.clear();
         self.tree = None;
         self.layout_cache = None;
+        self.category_cache = None;
         self.navigation_history.clear();
         self.current_root = 0;
         self.trashed_paths.clear();
@@ -170,6 +176,7 @@ impl DiskApp {
                             self.current_root = 0;
                         }
                         self.layout_cache = None;
+                        self.category_cache = None;
                         self.state = AppState::Viewing;
                     }
                     ScanMessage::Complete(mut tree) => {
@@ -211,6 +218,7 @@ impl DiskApp {
                         self.current_root = 0;
                         self.navigation_history.clear();
                         self.layout_cache = None;
+                        self.category_cache = None;
                         self.state = AppState::Viewing;
                         self.scan_receiver = None;
                         return;
@@ -232,12 +240,14 @@ impl DiskApp {
         self.navigation_history.push(self.current_root);
         self.current_root = index;
         self.layout_cache = None;
+        self.category_cache = None;
     }
 
     fn navigate_back(&mut self) {
         if let Some(prev) = self.navigation_history.pop() {
             self.current_root = prev;
             self.layout_cache = None;
+            self.category_cache = None;
         }
     }
 
@@ -245,6 +255,7 @@ impl DiskApp {
         self.navigation_history.push(self.current_root);
         self.current_root = index;
         self.layout_cache = None;
+        self.category_cache = None;
     }
 
     /// Remove trashed paths from an incoming scan tree so deleted items don't reappear.
@@ -305,6 +316,7 @@ impl eframe::App for DiskApp {
                         self.navigation_history.push(self.current_root);
                         self.current_root = 0;
                         self.layout_cache = None;
+                        self.category_cache = None;
                     }
                     if ui.button("Rescan").clicked() {
                         if let Some(root) = self.scan_root.clone() {
@@ -372,11 +384,21 @@ impl eframe::App for DiskApp {
                 .default_width(SIDEBAR_DEFAULT_WIDTH)
                 .show(ctx, |ui| {
                     if let Some(ref tree) = self.tree {
+                        // Compute or reuse category sizes
+                        let cat_sizes = match &self.category_cache {
+                            Some((root, data)) if *root == self.current_root => data.clone(),
+                            _ => {
+                                let data = sidebar::compute_category_sizes(tree, self.current_root);
+                                self.category_cache = Some((self.current_root, data.clone()));
+                                data
+                            }
+                        };
                         if let Some(target) = sidebar::draw_sidebar(
                             ui,
                             tree,
                             self.current_root,
                             &self.search_results,
+                            &cat_sizes,
                         ) {
                             self.navigate_to(target);
                         }
@@ -549,6 +571,7 @@ impl eframe::App for DiskApp {
                             tree.remove_node(node_idx);
                             tree.sort_children_by_size();
                             self.layout_cache = None;
+                            self.category_cache = None;
 
                             // Update disk cache with the modified tree
                             let tree_for_cache = tree.clone();

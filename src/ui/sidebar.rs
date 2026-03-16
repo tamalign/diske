@@ -78,6 +78,11 @@ fn get_all_volumes() -> Vec<VolumeInfo> {
     volumes
 }
 
+/// Compute category sizes for a given root. Call this when tree/root changes, not every frame.
+pub fn compute_category_sizes(tree: &FsTree, root: usize) -> Vec<(FileCategory, u64)> {
+    compute_category_sizes_impl(tree, root)
+}
+
 /// Draw sidebar with storage info, top largest files, and legend.
 /// Returns Some(node_index) if user clicked an item to navigate to.
 /// When `search_results` is non-empty, shows search results instead of largest items.
@@ -86,6 +91,7 @@ pub fn draw_sidebar(
     tree: &FsTree,
     current_root: usize,
     search_results: &[usize],
+    category_sizes: &[(FileCategory, u64)],
 ) -> Option<usize> {
     let mut navigate_to = None;
 
@@ -213,9 +219,45 @@ pub fn draw_sidebar(
 
     ui.separator();
 
-    // Legend
-    ui.strong("Legend");
+    // Category breakdown — shows size per file type with bars
+    ui.strong("By Type");
     ui.add_space(4.0);
+
+    let max_size = category_sizes.iter().map(|&(_, s)| s).max().unwrap_or(1);
+
+    for &(cat, size) in category_sizes {
+        if size == 0 {
+            continue;
+        }
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(10.0, 10.0),
+                egui::Sense::hover(),
+            );
+            ui.painter().rect_filled(rect, 2.0, cat.color());
+
+            let bar_width = (ui.available_width() - 4.0).max(0.0);
+            let bar_height = 10.0;
+            let ratio = size as f32 / max_size as f32;
+
+            let (bar_rect, _) =
+                ui.allocate_exact_size(egui::vec2(bar_width, bar_height), egui::Sense::hover());
+            // Background
+            ui.painter().rect_filled(bar_rect, 2.0, egui::Color32::from_rgb(50, 50, 50));
+            // Fill
+            let fill_rect = egui::Rect::from_min_size(
+                bar_rect.min,
+                egui::vec2(bar_width * ratio, bar_height),
+            );
+            ui.painter().rect_filled(fill_rect, 2.0, cat.color());
+        });
+        ui.label(format!("{}: {}", cat.label(), format_size(size)));
+    }
+
+    navigate_to
+}
+
+fn compute_category_sizes_impl(tree: &FsTree, root: usize) -> Vec<(FileCategory, u64)> {
     let categories = [
         FileCategory::Image,
         FileCategory::Video,
@@ -226,19 +268,31 @@ pub fn draw_sidebar(
         FileCategory::Executable,
         FileCategory::Other,
     ];
+    let mut sizes = [0u64; 8];
 
-    for cat in &categories {
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(10.0, 10.0),
-                egui::Sense::hover(),
-            );
-            ui.painter().rect_filled(rect, 2.0, cat.color());
-            ui.label(cat.label());
-        });
+    let mut stack: Vec<usize> = tree.children_of(root).to_vec();
+    while let Some(idx) = stack.pop() {
+        let node = tree.get(idx);
+        if node.is_dir {
+            for &child in tree.children_of(idx) {
+                stack.push(child);
+            }
+        } else {
+            let cat = match tree.extension(idx) {
+                Some(e) => FileCategory::from_extension(e),
+                None => FileCategory::Other,
+            };
+            sizes[cat as usize] += node.size;
+        }
     }
 
-    navigate_to
+    let mut result: Vec<(FileCategory, u64)> = categories
+        .iter()
+        .enumerate()
+        .map(|(i, &cat)| (cat, sizes[i]))
+        .collect();
+    result.sort_by(|a, b| b.1.cmp(&a.1));
+    result
 }
 
 fn format_size(bytes: u64) -> String {
