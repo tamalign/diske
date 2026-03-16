@@ -93,12 +93,18 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
         bytes_scanned += size;
 
         // Send progress every 2000 files (lightweight, no clone)
+        // If send fails, the receiver was dropped (app closed) — stop scanning.
         if files_scanned % 2000 == 0 {
-            let _ = tx.send(ScanMessage::Progress {
-                files_scanned,
-                bytes_scanned,
-                current_path: path.to_string_lossy().to_string(),
-            });
+            if tx
+                .send(ScanMessage::Progress {
+                    files_scanned,
+                    bytes_scanned,
+                    current_path: path.to_string_lossy().to_string(),
+                })
+                .is_err()
+            {
+                return Err("Scan cancelled".to_string());
+            }
         }
 
         // Send snapshots with exponentially increasing intervals:
@@ -107,7 +113,9 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
             let mut snapshot = tree.clone();
             snapshot.compute_sizes();
             snapshot.sort_children_by_size();
-            let _ = tx.send(ScanMessage::Snapshot(snapshot));
+            if tx.send(ScanMessage::Snapshot(snapshot)).is_err() {
+                return Err("Scan cancelled".to_string());
+            }
             next_snapshot_at = next_snapshot_at.saturating_mul(3);
         }
     }

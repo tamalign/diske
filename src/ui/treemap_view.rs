@@ -30,7 +30,7 @@ pub fn draw_treemap(
     highlighted_nodes: &HashSet<usize>,
 ) -> TreemapResponse {
     let available = ui.available_size();
-    let (response, painter) = ui.allocate_painter(available, Sense::hover());
+    let (response, painter) = ui.allocate_painter(available, Sense::click());
     let rect = response.rect;
 
     // Get children items sorted by size
@@ -181,7 +181,7 @@ pub fn draw_treemap(
         }
     }
 
-    // Handle clicks
+    // Handle hover tooltip and clicks
     if let Some(hover_idx) = hovered_index {
         let node = tree.get(hover_idx);
 
@@ -199,15 +199,15 @@ pub fn draw_treemap(
             }
         });
 
-        // Left click on directory -> navigate into it
-        if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)) {
+        // Use response.clicked() / secondary_clicked() instead of global pointer state.
+        // This respects egui's event consumption — clicks on overlapping Windows
+        // (context menu, dialogs) won't trigger treemap navigation.
+        if response.clicked() {
             if node.is_dir {
                 result.clicked_dir = Some(hover_idx);
             }
         }
-
-        // Right click -> context menu
-        if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)) {
+        if response.secondary_clicked() {
             result.right_clicked = Some(hover_idx);
         }
     }
