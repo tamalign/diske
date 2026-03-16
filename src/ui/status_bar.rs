@@ -48,9 +48,12 @@ fn format_size(bytes: u64) -> String {
 }
 
 fn truncate_path(path: &str, max_len: usize) -> String {
-    if path.len() <= max_len {
+    let char_count = path.chars().count();
+    if char_count <= max_len {
         path.to_string()
     } else {
-        format!("...{}", &path[path.len() - max_len + 3..])
+        let skip = char_count - max_len + 3;
+        let truncated: String = path.chars().skip(skip).collect();
+        format!("...{}", truncated)
     }
 }

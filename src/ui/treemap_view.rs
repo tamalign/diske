@@ -111,10 +111,12 @@ pub fn draw_treemap(
                 10.0
             });
 
-            // Clip text to fit
+            // Clip text to fit (char-aware to handle multibyte)
             let max_chars = (item_rect.width() / 7.0) as usize;
-            let display_text = if text.len() > max_chars && max_chars > 3 {
-                format!("{}...", &text[..max_chars - 3])
+            let char_count = text.chars().count();
+            let display_text = if char_count > max_chars && max_chars > 3 {
+                let truncated: String = text.chars().take(max_chars - 3).collect();
+                format!("{}...", truncated)
             } else {
                 text.clone()
             };
