@@ -1,6 +1,7 @@
 use crossbeam_channel::{Receiver, unbounded};
 use egui::Vec2;
 use std::path::PathBuf;
+use std::process::Command;
 
 use crate::scan::cache;
 use crate::scan::fs_tree::FsTree;
@@ -34,11 +35,37 @@ pub struct DiskApp {
 
     // Context menu
     context_menu_node: Option<usize>,
+
+    // Toast message
+    toast_message: Option<(String, std::time::Instant)>,
 }
 
 impl DiskApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
+
+        // Load Japanese-capable font
+        let mut fonts = egui::FontDefinitions::default();
+        if let Ok(font_data) =
+            std::fs::read("/System/Library/Fonts/Supplemental/Arial Unicode.ttf")
+        {
+            fonts.font_data.insert(
+                "arial_unicode".to_owned(),
+                egui::FontData::from_owned(font_data).into(),
+            );
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .push("arial_unicode".to_owned());
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .push("arial_unicode".to_owned());
+        }
+        cc.egui_ctx.set_fonts(fonts);
+
         let mut app = Self {
             state: AppState::Welcome,
             tree: None,
@@ -51,6 +78,7 @@ impl DiskApp {
             current_scan_path: String::new(),
             layout_cache: None,
             context_menu_node: None,
+            toast_message: None,
         };
 
         // Try to load cache first, then start background rescan
@@ -346,11 +374,24 @@ impl eframe::App for DiskApp {
                     .resizable(false)
                     .show(ctx, |ui| {
                         if ui.button("Reveal in Finder").clicked() {
-                            let _ = open::that_detached(path.parent().unwrap_or(&path));
+                            // Use `open -R` to reveal and highlight in Finder
+                            match Command::new("open").arg("-R").arg(&path).spawn() {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    self.toast_message = Some((
+                                        format!("Failed to reveal: {}", e),
+                                        std::time::Instant::now(),
+                                    ));
+                                }
+                            }
                             self.context_menu_node = None;
                         }
                         if ui.button("Copy Path").clicked() {
                             ui.ctx().copy_text(path.to_string_lossy().to_string());
+                            self.toast_message = Some((
+                                "Path copied!".to_string(),
+                                std::time::Instant::now(),
+                            ));
                             self.context_menu_node = None;
                         }
                         ui.separator();
@@ -364,9 +405,16 @@ impl eframe::App for DiskApp {
                                         tree.remove_node(node_idx);
                                         self.layout_cache = None;
                                     }
+                                    self.toast_message = Some((
+                                        format!("Moved to Trash: {}", name),
+                                        std::time::Instant::now(),
+                                    ));
                                 }
                                 Err(e) => {
-                                    eprintln!("Failed to trash: {}", e);
+                                    self.toast_message = Some((
+                                        format!("Failed to trash: {}", e),
+                                        std::time::Instant::now(),
+                                    ));
                                 }
                             }
                             self.context_menu_node = None;
@@ -376,6 +424,35 @@ impl eframe::App for DiskApp {
                 if !open {
                     self.context_menu_node = None;
                 }
+            }
+        }
+
+        // Toast notification
+        if let Some((ref msg, instant)) = self.toast_message {
+            let elapsed = instant.elapsed().as_secs_f32();
+            if elapsed < 3.0 {
+                let alpha = if elapsed > 2.0 {
+                    ((3.0 - elapsed) * 255.0) as u8
+                } else {
+                    255
+                };
+                egui::Area::new(egui::Id::new("toast"))
+                    .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -40.0])
+                    .show(ctx, |ui| {
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgba_unmultiplied(40, 40, 40, alpha))
+                            .corner_radius(8.0)
+                            .inner_margin(egui::Margin::same(12))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(msg)
+                                        .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha)),
+                                );
+                            });
+                    });
+                ctx.request_repaint();
+            } else {
+                self.toast_message = None;
             }
         }
     }
