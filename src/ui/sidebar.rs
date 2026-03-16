@@ -1,7 +1,81 @@
+use std::path::Path;
+
 use crate::scan::fs_tree::FsTree;
 use crate::ui::colors::{color_for_extension, FileCategory};
 
-/// Draw sidebar with top largest files and legend.
+/// Disk volume info
+struct VolumeInfo {
+    name: String,
+    total: u64,
+    available: u64,
+}
+
+fn get_volume_info(path: &Path) -> Option<VolumeInfo> {
+    use std::ffi::CString;
+    let path_cstr = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(path_cstr.as_ptr(), &mut stat) != 0 {
+            return None;
+        }
+        let block_size = stat.f_frsize as u64;
+        let total = stat.f_blocks as u64 * block_size;
+        let available = stat.f_bavail as u64 * block_size;
+
+        // Get mount point name
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+        Some(VolumeInfo {
+            name,
+            total,
+            available,
+        })
+    }
+}
+
+fn get_all_volumes() -> Vec<VolumeInfo> {
+    let mut volumes = Vec::new();
+
+    // Root volume
+    if let Some(info) = get_volume_info(Path::new("/")) {
+        volumes.push(VolumeInfo {
+            name: "Macintosh HD".to_string(),
+            ..info
+        });
+    }
+
+    // External/additional volumes under /Volumes
+    if let Ok(entries) = std::fs::read_dir("/Volumes") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Skip symlinks to root
+                if let Ok(target) = std::fs::read_link(&path) {
+                    if target == Path::new("/") {
+                        continue;
+                    }
+                }
+                if let Some(info) = get_volume_info(&path) {
+                    // Skip if same as root (some /Volumes entries point to root)
+                    if volumes.first().map(|v| v.total) == Some(info.total)
+                        && volumes.first().map(|v| v.available) == Some(info.available)
+                    {
+                        continue;
+                    }
+                    volumes.push(info);
+                }
+            }
+        }
+    }
+
+    volumes
+}
+
+/// Draw sidebar with storage info, top largest files, and legend.
 /// Returns Some(node_index) if user clicked an item to navigate to.
 pub fn draw_sidebar(
     ui: &mut egui::Ui,
@@ -14,8 +88,58 @@ pub fn draw_sidebar(
     ui.heading("diske");
     ui.separator();
 
+    // Storage volumes
+    ui.strong("Storage");
+    ui.add_space(4.0);
+    let volumes = get_all_volumes();
+    for vol in &volumes {
+        let used = vol.total.saturating_sub(vol.available);
+        let usage_ratio = if vol.total > 0 {
+            used as f32 / vol.total as f32
+        } else {
+            0.0
+        };
+
+        ui.label(format!("{}", vol.name));
+        ui.horizontal(|ui| {
+            let bar_width = ui.available_width() - 4.0;
+            let bar_height = 14.0;
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(bar_width, bar_height), egui::Sense::hover());
+
+            // Background
+            ui.painter().rect_filled(
+                rect,
+                3.0,
+                egui::Color32::from_rgb(60, 60, 60),
+            );
+
+            // Used portion
+            let used_rect = egui::Rect::from_min_size(
+                rect.min,
+                egui::vec2(bar_width * usage_ratio, bar_height),
+            );
+            let bar_color = if usage_ratio > 0.9 {
+                egui::Color32::from_rgb(214, 72, 72) // Red when almost full
+            } else if usage_ratio > 0.75 {
+                egui::Color32::from_rgb(234, 180, 46) // Yellow when getting full
+            } else {
+                egui::Color32::from_rgb(66, 133, 244) // Blue normal
+            };
+            ui.painter().rect_filled(used_rect, 3.0, bar_color);
+        });
+        ui.label(format!(
+            "{} / {} ({} free)",
+            format_size(used),
+            format_size(vol.total),
+            format_size(vol.available),
+        ));
+        ui.add_space(4.0);
+    }
+    ui.separator();
+
     // Current directory info
-    ui.label(format!("Total: {}", format_size(node.size)));
+    ui.label(format!("Current: {}", format_size(node.size)));
     ui.label(format!("Items: {}", count_descendants(tree, current_root)));
     ui.separator();
 
@@ -40,7 +164,6 @@ pub fn draw_sidebar(
                 let color = color_for_extension(ext, item.is_dir);
 
                 ui.horizontal(|ui| {
-                    // Color indicator
                     let (rect, _) = ui.allocate_exact_size(
                         egui::vec2(10.0, 10.0),
                         egui::Sense::hover(),
