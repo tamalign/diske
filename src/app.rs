@@ -267,10 +267,6 @@ impl eframe::App for DiskApp {
                             self.start_scan(root);
                         }
                     }
-                    if ui.button("Trash").clicked() {
-                        // Open Finder's Trash view (~/.Trash is SIP-protected)
-                        let _ = Command::new("open").arg("trash://").spawn();
-                    }
 
                     ui.separator();
 
@@ -451,7 +447,14 @@ impl eframe::App for DiskApp {
                     Ok(()) => {
                         if let Some(ref mut tree) = self.tree {
                             tree.remove_node(node_idx);
+                            tree.sort_children_by_size();
                             self.layout_cache = None;
+
+                            // Update disk cache with the modified tree
+                            let tree_for_cache = tree.clone();
+                            std::thread::spawn(move || {
+                                let _ = cache::save(&tree_for_cache);
+                            });
                         }
                         self.toast_message = Some((
                             format!("Moved to Trash: {}", name),

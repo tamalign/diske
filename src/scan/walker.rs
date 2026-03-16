@@ -14,7 +14,7 @@ pub enum ScanMessage {
         bytes_scanned: u64,
         current_path: String,
     },
-    /// Intermediate snapshot of the tree (sent periodically during scan)
+    /// Intermediate snapshot of the tree (sent a few times during scan)
     Snapshot(FsTree),
     Complete(FsTree),
     Error(String),
@@ -42,6 +42,7 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
 
     let mut files_scanned: u64 = 0;
     let mut bytes_scanned: u64 = 0;
+    let mut next_snapshot_at: u64 = 10_000;
 
     let walker = WalkDir::new(root).skip_hidden(false).sort(true);
 
@@ -76,7 +77,6 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
         let size = if is_dir {
             0
         } else {
-            // Use st_blocks * 512 for actual disk usage (handles sparse files correctly)
             entry
                 .metadata()
                 .map(|m| m.blocks() * 512)
@@ -92,8 +92,8 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
         files_scanned += 1;
         bytes_scanned += size;
 
-        // Send progress every 500 files
-        if files_scanned % 500 == 0 {
+        // Send progress every 2000 files (lightweight, no clone)
+        if files_scanned % 2000 == 0 {
             let _ = tx.send(ScanMessage::Progress {
                 files_scanned,
                 bytes_scanned,
@@ -101,12 +101,14 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
             });
         }
 
-        // Send intermediate snapshot every 5000 files
-        if files_scanned % 5000 == 0 {
+        // Send snapshots with exponentially increasing intervals:
+        // 10K, 30K, 90K, 270K, ... (max ~5 snapshots for a large scan)
+        if files_scanned == next_snapshot_at {
             let mut snapshot = tree.clone();
             snapshot.compute_sizes();
             snapshot.sort_children_by_size();
             let _ = tx.send(ScanMessage::Snapshot(snapshot));
+            next_snapshot_at = next_snapshot_at.saturating_mul(3);
         }
     }
 
