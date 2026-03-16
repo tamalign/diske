@@ -2,6 +2,7 @@ use crossbeam_channel::{Receiver, unbounded};
 use egui::Vec2;
 use std::path::PathBuf;
 
+use crate::scan::cache;
 use crate::scan::fs_tree::FsTree;
 use crate::scan::walker::{ScanMessage, scan_directory};
 use crate::treemap::layout::LayoutRect;
@@ -23,6 +24,7 @@ pub struct DiskApp {
 
     // Scan state
     scan_receiver: Option<Receiver<ScanMessage>>,
+    scan_root: Option<PathBuf>,
     files_scanned: u64,
     bytes_scanned: u64,
     current_scan_path: String,
@@ -36,7 +38,6 @@ pub struct DiskApp {
 
 impl DiskApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Force dark theme
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         let mut app = Self {
             state: AppState::Welcome,
@@ -44,6 +45,7 @@ impl DiskApp {
             current_root: 0,
             navigation_history: Vec::new(),
             scan_receiver: None,
+            scan_root: None,
             files_scanned: 0,
             bytes_scanned: 0,
             current_scan_path: String::new(),
@@ -51,9 +53,16 @@ impl DiskApp {
             context_menu_node: None,
         };
 
-        // Auto-scan home directory on launch
+        // Try to load cache first, then start background rescan
         if let Some(home) = dirs_next::home_dir() {
-            app.start_scan(home);
+            if let Some(cached_tree) = cache::load(&home) {
+                app.files_scanned = cached_tree.len() as u64;
+                app.bytes_scanned = cached_tree.get(cached_tree.root).size;
+                app.tree = Some(cached_tree);
+                app.state = AppState::Viewing;
+            }
+            // Always start a fresh scan (will replace cache when done)
+            app.start_scan_preserving_view(home);
         }
 
         app
@@ -62,6 +71,7 @@ impl DiskApp {
     fn start_scan(&mut self, path: PathBuf) {
         let (tx, rx) = unbounded();
         self.scan_receiver = Some(rx);
+        self.scan_root = Some(path.clone());
         self.state = AppState::Scanning;
         self.files_scanned = 0;
         self.bytes_scanned = 0;
@@ -74,9 +84,23 @@ impl DiskApp {
         scan_directory(&path, tx);
     }
 
+    /// Start a scan but keep current tree visible (for background rescan with cache)
+    fn start_scan_preserving_view(&mut self, path: PathBuf) {
+        let (tx, rx) = unbounded();
+        self.scan_receiver = Some(rx);
+        self.scan_root = Some(path.clone());
+        if self.tree.is_none() {
+            self.state = AppState::Scanning;
+        }
+        self.files_scanned = 0;
+        self.bytes_scanned = 0;
+        self.current_scan_path.clear();
+
+        scan_directory(&path, tx);
+    }
+
     fn process_scan_messages(&mut self) {
         if let Some(ref rx) = self.scan_receiver {
-            // Drain all available messages
             while let Ok(msg) = rx.try_recv() {
                 match msg {
                     ScanMessage::Progress {
@@ -88,17 +112,44 @@ impl DiskApp {
                         self.bytes_scanned = bytes_scanned;
                         self.current_scan_path = current_path;
                     }
+                    ScanMessage::Snapshot(snapshot) => {
+                        // Update treemap with intermediate results during scan
+                        self.bytes_scanned = snapshot.get(snapshot.root).size;
+                        self.files_scanned = snapshot.len() as u64;
+                        // Reset navigation to root when updating snapshot
+                        let was_at_root = self.current_root == 0;
+                        self.tree = Some(snapshot);
+                        if was_at_root || self.state == AppState::Scanning {
+                            self.current_root = 0;
+                        }
+                        self.layout_cache = None;
+                        self.state = AppState::Viewing;
+                    }
                     ScanMessage::Complete(tree) => {
                         self.files_scanned = tree.len() as u64;
                         self.bytes_scanned = tree.get(tree.root).size;
+
+                        // Save to cache in background
+                        let tree_for_cache = tree.clone();
+                        std::thread::spawn(move || {
+                            if let Err(e) = cache::save(&tree_for_cache) {
+                                eprintln!("Cache save failed: {}", e);
+                            }
+                        });
+
                         self.tree = Some(tree);
                         self.current_root = 0;
+                        self.navigation_history.clear();
+                        self.layout_cache = None;
                         self.state = AppState::Viewing;
                         self.scan_receiver = None;
                         return;
                     }
                     ScanMessage::Error(err) => {
-                        self.state = AppState::Error(err);
+                        // Only show error if we don't have a tree to display
+                        if self.tree.is_none() {
+                            self.state = AppState::Error(err);
+                        }
                         self.scan_receiver = None;
                         return;
                     }
@@ -121,17 +172,20 @@ impl DiskApp {
     }
 
     fn navigate_to_direct(&mut self, index: usize) {
-        // Navigate directly (for breadcrumbs), clear forward history
         self.navigation_history.push(self.current_root);
         self.current_root = index;
         self.layout_cache = None;
+    }
+
+    fn is_scanning(&self) -> bool {
+        self.scan_receiver.is_some()
     }
 }
 
 impl eframe::App for DiskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Process scan messages
-        if self.state == AppState::Scanning {
+        if self.is_scanning() {
             self.process_scan_messages();
             ctx.request_repaint();
         }
@@ -162,15 +216,27 @@ impl eframe::App for DiskApp {
                         self.current_root = 0;
                         self.layout_cache = None;
                     }
+                    if ui.button("Rescan").clicked() {
+                        if let Some(root) = self.scan_root.clone() {
+                            self.start_scan(root);
+                        }
+                    }
 
                     ui.separator();
 
-                    // Breadcrumbs
                     if let Some(ref tree) = self.tree {
                         if let Some(target) = breadcrumbs::draw_breadcrumbs(ui, tree, self.current_root) {
                             self.navigate_to_direct(target);
                         }
                     }
+                }
+
+                // Show scanning indicator in top bar
+                if self.is_scanning() && self.state == AppState::Viewing {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spinner();
+                        ui.label("Scanning...");
+                    });
                 }
             });
         });
@@ -182,7 +248,7 @@ impl eframe::App for DiskApp {
                 self.files_scanned,
                 self.bytes_scanned,
                 &self.current_scan_path,
-                self.state == AppState::Scanning,
+                self.is_scanning(),
             );
         });
 
@@ -266,7 +332,7 @@ impl eframe::App for DiskApp {
             self.state = AppState::Welcome;
         }
 
-        // Context menu (shown as a window)
+        // Context menu
         if let Some(node_idx) = self.context_menu_node {
             if let Some(ref tree) = self.tree {
                 let node = tree.get(node_idx);
@@ -294,7 +360,6 @@ impl eframe::App for DiskApp {
                         {
                             match trash::delete(&path) {
                                 Ok(()) => {
-                                    // Remove from tree and update
                                     if let Some(ref mut tree) = self.tree {
                                         tree.remove_node(node_idx);
                                         self.layout_cache = None;

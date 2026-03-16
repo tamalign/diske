@@ -13,6 +13,8 @@ pub enum ScanMessage {
         bytes_scanned: u64,
         current_path: String,
     },
+    /// Intermediate snapshot of the tree (sent periodically during scan)
+    Snapshot(FsTree),
     Complete(FsTree),
     Error(String),
 }
@@ -34,7 +36,6 @@ pub fn scan_directory(root: &Path, tx: Sender<ScanMessage>) {
 
 fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
     let mut tree = FsTree::new(root);
-    // Map from path to node index for building parent-child relationships
     let mut path_to_index: HashMap<std::path::PathBuf, usize> = HashMap::new();
     path_to_index.insert(root.to_path_buf(), 0);
 
@@ -51,7 +52,6 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
 
         let path = entry.path();
 
-        // Skip the root itself
         if path == root {
             continue;
         }
@@ -63,7 +63,7 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
 
         let parent_index = match path_to_index.get(&parent_path) {
             Some(&idx) => idx,
-            None => continue, // Parent not in tree (e.g., permission denied)
+            None => continue,
         };
 
         let name = path
@@ -87,13 +87,21 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
         files_scanned += 1;
         bytes_scanned += size;
 
-        // Send progress every 1000 files
-        if files_scanned % 1000 == 0 {
+        // Send progress every 500 files
+        if files_scanned % 500 == 0 {
             let _ = tx.send(ScanMessage::Progress {
                 files_scanned,
                 bytes_scanned,
                 current_path: path.to_string_lossy().to_string(),
             });
+        }
+
+        // Send intermediate snapshot every 5000 files
+        if files_scanned % 5000 == 0 {
+            let mut snapshot = tree.clone();
+            snapshot.compute_sizes();
+            snapshot.sort_children_by_size();
+            let _ = tx.send(ScanMessage::Snapshot(snapshot));
         }
     }
 

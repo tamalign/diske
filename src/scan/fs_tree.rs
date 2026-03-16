@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsNode {
     pub name: String,
     pub size: u64,
@@ -11,7 +12,7 @@ pub struct FsNode {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsTree {
     pub nodes: Vec<FsNode>,
     pub root: usize,
