@@ -3,6 +3,9 @@ use std::path::Path;
 use crate::scan::fs_tree::FsTree;
 use crate::ui::colors::{color_for_extension, FileCategory};
 
+const TOP_ITEMS_COUNT: usize = 20;
+const SIDEBAR_SCROLL_BOTTOM_MARGIN: f32 = 120.0;
+
 /// Disk volume info
 struct VolumeInfo {
     name: String,
@@ -140,7 +143,7 @@ pub fn draw_sidebar(
 
     // Current directory info
     ui.label(format!("Current: {}", format_size(node.size)));
-    ui.label(format!("Items: {}", count_descendants(tree, current_root)));
+    ui.label(format!("Items: {}", node.descendant_count));
     ui.separator();
 
     // Top largest items in current view
@@ -150,10 +153,10 @@ pub fn draw_sidebar(
     let children = tree.children_of(current_root);
     let mut sorted: Vec<usize> = children.to_vec();
     sorted.sort_by(|&a, &b| tree.get(b).size.cmp(&tree.get(a).size));
-    sorted.truncate(20);
+    sorted.truncate(TOP_ITEMS_COUNT);
 
     egui::ScrollArea::vertical()
-        .max_height(ui.available_height() - 120.0)
+        .max_height(ui.available_height() - SIDEBAR_SCROLL_BOTTOM_MARGIN)
         .show(ui, |ui| {
             for &idx in &sorted {
                 let item = tree.get(idx);
@@ -215,17 +218,6 @@ pub fn draw_sidebar(
     }
 
     navigate_to
-}
-
-fn count_descendants(tree: &FsTree, index: usize) -> usize {
-    let children = tree.children_of(index);
-    let mut count = children.len();
-    for &child in children {
-        if tree.get(child).is_dir {
-            count += count_descendants(tree, child);
-        }
-    }
-    count
 }
 
 fn format_size(bytes: u64) -> String {

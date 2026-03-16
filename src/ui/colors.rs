@@ -2,15 +2,15 @@ use egui::Color32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileCategory {
-    Image,
-    Video,
-    Audio,
-    Archive,
-    Code,
-    Document,
-    Executable,
-    Other,
-    Directory,
+    Image = 0,
+    Video = 1,
+    Audio = 2,
+    Archive = 3,
+    Code = 4,
+    Document = 5,
+    Executable = 6,
+    Other = 7,
+    Directory = 8,
 }
 
 impl FileCategory {
@@ -112,10 +112,22 @@ pub fn color_for_extension(ext: Option<&str>, is_dir: bool) -> Color32 {
     }
 }
 
+const ALL_CATEGORIES: [FileCategory; 9] = [
+    FileCategory::Image,
+    FileCategory::Video,
+    FileCategory::Audio,
+    FileCategory::Archive,
+    FileCategory::Code,
+    FileCategory::Document,
+    FileCategory::Executable,
+    FileCategory::Other,
+    FileCategory::Directory,
+];
+
 /// Find the dominant file category in a directory by total bytes.
 fn dominant_category(tree: &FsTree, index: usize) -> FileCategory {
-    use std::collections::HashMap;
-    let mut category_sizes: HashMap<FileCategory, u64> = HashMap::new();
+    // Use a fixed-size array instead of HashMap (9 categories)
+    let mut sizes = [0u64; 9];
 
     for &child in tree.children_of(index) {
         let child_node = tree.get(child);
@@ -127,13 +139,14 @@ fn dominant_category(tree: &FsTree, index: usize) -> FileCategory {
                 None => FileCategory::Other,
             }
         };
-        *category_sizes.entry(cat).or_insert(0) += child_node.size;
+        sizes[cat as usize] += child_node.size;
     }
 
-    category_sizes
-        .into_iter()
-        .max_by_key(|&(_, size)| size)
-        .map(|(cat, _)| cat)
+    sizes
+        .iter()
+        .enumerate()
+        .max_by_key(|&(_, &size)| size)
+        .map(|(i, _)| ALL_CATEGORIES[i])
         .unwrap_or(FileCategory::Directory)
 }
 
@@ -153,4 +166,38 @@ pub fn lighten(color: Color32, amount: f32) -> Color32 {
         (color.g() as f32 + (255.0 - color.g() as f32) * amount) as u8,
         (color.b() as f32 + (255.0 - color.b() as f32) * amount) as u8,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_category_from_extension() {
+        assert_eq!(FileCategory::from_extension("jpg"), FileCategory::Image);
+        assert_eq!(FileCategory::from_extension("JPEG"), FileCategory::Image);
+        assert_eq!(FileCategory::from_extension("mp4"), FileCategory::Video);
+        assert_eq!(FileCategory::from_extension("mp3"), FileCategory::Audio);
+        assert_eq!(FileCategory::from_extension("zip"), FileCategory::Archive);
+        assert_eq!(FileCategory::from_extension("rs"), FileCategory::Code);
+        assert_eq!(FileCategory::from_extension("pdf"), FileCategory::Document);
+        assert_eq!(FileCategory::from_extension("exe"), FileCategory::Executable);
+        assert_eq!(FileCategory::from_extension("xyz"), FileCategory::Other);
+    }
+
+    #[test]
+    fn test_darken_lighten() {
+        let white = Color32::from_rgb(200, 200, 200);
+        let darkened = darken(white, 0.5);
+        assert_eq!(darkened.r(), 100);
+        assert_eq!(darkened.g(), 100);
+
+        let black = Color32::from_rgb(0, 0, 0);
+        let lightened = lighten(black, 0.5);
+        assert_eq!(lightened.r(), 127);
+
+        // lighten(white, 0) should be unchanged
+        let same = lighten(white, 0.0);
+        assert_eq!(same.r(), 200);
+    }
 }

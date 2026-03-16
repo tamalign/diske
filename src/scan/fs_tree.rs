@@ -10,6 +10,8 @@ pub struct FsNode {
     pub is_dir: bool,
     pub depth: u16,
     pub path: PathBuf,
+    #[serde(default)]
+    pub descendant_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +35,7 @@ impl FsTree {
             is_dir: true,
             depth: 0,
             path: root_path.to_path_buf(),
+            descendant_count: 0,
         };
 
         FsTree {
@@ -59,23 +62,26 @@ impl FsTree {
             is_dir,
             depth,
             path,
+            descendant_count: 0,
         };
         self.nodes.push(node);
         self.nodes[parent].children.push(index);
         index
     }
 
-    /// Propagate sizes from leaves up to root.
+    /// Propagate sizes and descendant counts from leaves up to root.
     pub fn compute_sizes(&mut self) {
         // Process nodes in reverse order (children before parents).
         for i in (0..self.nodes.len()).rev() {
             if self.nodes[i].is_dir {
-                let child_sum: u64 = self.nodes[i]
-                    .children
-                    .iter()
-                    .map(|&c| self.nodes[c].size)
-                    .sum();
+                let mut child_sum: u64 = 0;
+                let mut desc_count: usize = 0;
+                for &c in &self.nodes[i].children {
+                    child_sum += self.nodes[c].size;
+                    desc_count += 1 + self.nodes[c].descendant_count;
+                }
                 self.nodes[i].size = child_sum;
+                self.nodes[i].descendant_count = desc_count;
             }
         }
     }
@@ -237,5 +243,25 @@ mod tests {
 
         assert_eq!(tree.extension(f), Some("png"));
         assert_eq!(tree.extension(d), None);
+    }
+
+    #[test]
+    fn test_descendant_count() {
+        let mut tree = FsTree::new(Path::new("/test"));
+        let dir_a = tree.add_node("dir_a".into(), 0, 0, true, PathBuf::from("/test/dir_a"));
+        tree.add_node("f1".into(), 100, dir_a, false, PathBuf::from("/test/dir_a/f1"));
+        tree.add_node("f2".into(), 200, dir_a, false, PathBuf::from("/test/dir_a/f2"));
+        tree.add_node("f3".into(), 50, 0, false, PathBuf::from("/test/f3"));
+
+        tree.compute_sizes();
+
+        // root has 4 descendants: dir_a, f1, f2, f3
+        assert_eq!(tree.get(0).descendant_count, 4);
+        // dir_a has 2 descendants: f1, f2
+        assert_eq!(tree.get(dir_a).descendant_count, 2);
+
+        // After removing dir_a, root should have 1 descendant
+        tree.remove_node(dir_a);
+        assert_eq!(tree.get(0).descendant_count, 1);
     }
 }

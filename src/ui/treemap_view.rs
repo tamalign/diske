@@ -4,6 +4,15 @@ use crate::scan::fs_tree::FsTree;
 use crate::treemap::layout::{squarify, LayoutRect};
 use crate::ui::colors::{color_for_node, darken, lighten};
 
+const TREEMAP_PADDING: f32 = 1.5;
+const FONT_SIZE_LARGE: f32 = 13.0;
+const FONT_SIZE_SMALL: f32 = 10.0;
+const MIN_RECT_LABEL_WIDTH: f32 = 40.0;
+const MIN_RECT_LABEL_HEIGHT: f32 = 20.0;
+const MIN_RECT_SIZE_LABEL_HEIGHT: f32 = 36.0;
+const LARGE_FONT_MIN_WIDTH: f32 = 100.0;
+const LARGE_FONT_MIN_HEIGHT: f32 = 30.0;
+
 pub struct TreemapResponse {
     pub clicked_dir: Option<usize>,
     pub right_clicked: Option<usize>,
@@ -38,7 +47,7 @@ pub fn draw_treemap(
             let new_layout = squarify(
                 &items,
                 (rect.min.x, rect.min.y, rect.width(), rect.height()),
-                1.5,
+                TREEMAP_PADDING,
             );
             *layout_cache = Some((current_root, available, new_layout.clone()));
             new_layout
@@ -103,12 +112,12 @@ pub fn draw_treemap(
         }
 
         // Label (only if rectangle is large enough)
-        if item_rect.width() > 40.0 && item_rect.height() > 20.0 {
+        if item_rect.width() > MIN_RECT_LABEL_WIDTH && item_rect.height() > MIN_RECT_LABEL_HEIGHT {
             let text = &node.name;
-            let font = FontId::proportional(if item_rect.width() > 100.0 && item_rect.height() > 30.0 {
-                13.0
+            let font = FontId::proportional(if item_rect.width() > LARGE_FONT_MIN_WIDTH && item_rect.height() > LARGE_FONT_MIN_HEIGHT {
+                FONT_SIZE_LARGE
             } else {
-                10.0
+                FONT_SIZE_SMALL
             });
 
             // Clip text to fit (char-aware to handle multibyte)
@@ -140,7 +149,7 @@ pub fn draw_treemap(
             );
 
             // Show size below name if enough space
-            if item_rect.height() > 36.0 {
+            if item_rect.height() > MIN_RECT_SIZE_LABEL_HEIGHT {
                 let size_text = format_size(node.size);
                 let size_pos = Pos2::new(item_rect.min.x + 4.0, item_rect.min.y + 18.0);
                 painter.text(

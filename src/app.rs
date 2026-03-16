@@ -1,10 +1,15 @@
 use crossbeam_channel::{Receiver, unbounded};
 use egui::Vec2;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
 use crate::scan::cache;
 use crate::scan::fs_tree::FsTree;
+
+const TOAST_DURATION_SECS: f32 = 3.0;
+const TOAST_FADE_START_SECS: f32 = 2.0;
+const SIDEBAR_DEFAULT_WIDTH: f32 = 220.0;
 use crate::scan::walker::{ScanMessage, scan_directory};
 use crate::treemap::layout::LayoutRect;
 use crate::ui::{breadcrumbs, sidebar, status_bar, treemap_view};
@@ -35,6 +40,9 @@ pub struct DiskApp {
 
     // Context menu
     context_menu_node: Option<usize>,
+
+    // Paths trashed during current scan (to filter from incoming scan results)
+    trashed_paths: HashSet<PathBuf>,
 
     // Toast message
     toast_message: Option<(String, std::time::Instant)>,
@@ -78,6 +86,7 @@ impl DiskApp {
             current_scan_path: String::new(),
             layout_cache: None,
             context_menu_node: None,
+            trashed_paths: HashSet::new(),
             toast_message: None,
         };
 
@@ -108,6 +117,7 @@ impl DiskApp {
         self.layout_cache = None;
         self.navigation_history.clear();
         self.current_root = 0;
+        self.trashed_paths.clear();
 
         scan_directory(&path, tx);
     }
@@ -140,7 +150,9 @@ impl DiskApp {
                         self.bytes_scanned = bytes_scanned;
                         self.current_scan_path = current_path;
                     }
-                    ScanMessage::Snapshot(snapshot) => {
+                    ScanMessage::Snapshot(mut snapshot) => {
+                        // Remove any items trashed during this scan
+                        self.apply_trashed_paths(&mut snapshot);
                         // Update treemap with intermediate results during scan
                         self.bytes_scanned = snapshot.get(snapshot.root).size;
                         self.files_scanned = snapshot.len() as u64;
@@ -153,7 +165,12 @@ impl DiskApp {
                         self.layout_cache = None;
                         self.state = AppState::Viewing;
                     }
-                    ScanMessage::Complete(tree) => {
+                    ScanMessage::Complete(mut tree) => {
+                        // Remove any items trashed during this scan
+                        self.apply_trashed_paths(&mut tree);
+                        // Clear trashed paths — scan is done, next scan won't include them
+                        self.trashed_paths.clear();
+
                         // If scan returned only the root node (empty/no access), show error
                         if tree.len() <= 1 {
                             if self.tree.is_none() {
@@ -221,6 +238,26 @@ impl DiskApp {
         self.navigation_history.push(self.current_root);
         self.current_root = index;
         self.layout_cache = None;
+    }
+
+    /// Remove trashed paths from an incoming scan tree so deleted items don't reappear.
+    fn apply_trashed_paths(&self, tree: &mut FsTree) {
+        if self.trashed_paths.is_empty() {
+            return;
+        }
+        let indices_to_remove: Vec<usize> = tree
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| self.trashed_paths.contains(&node.path))
+            .map(|(i, _)| i)
+            .collect();
+        for idx in indices_to_remove {
+            tree.remove_node(idx);
+        }
+        if !self.trashed_paths.is_empty() {
+            tree.sort_children_by_size();
+        }
     }
 
     fn is_scanning(&self) -> bool {
@@ -301,7 +338,7 @@ impl eframe::App for DiskApp {
         // Sidebar
         if self.state == AppState::Viewing {
             egui::SidePanel::left("sidebar")
-                .default_width(220.0)
+                .default_width(SIDEBAR_DEFAULT_WIDTH)
                 .show(ctx, |ui| {
                     if let Some(ref tree) = self.tree {
                         if let Some(target) = sidebar::draw_sidebar(ui, tree, self.current_root) {
@@ -445,6 +482,8 @@ impl eframe::App for DiskApp {
             ContextAction::Trash(path, name, node_idx) => {
                 match trash::delete(&path) {
                     Ok(()) => {
+                        // Track trashed path so incoming scan results won't restore it
+                        self.trashed_paths.insert(path.clone());
                         if let Some(ref mut tree) = self.tree {
                             tree.remove_node(node_idx);
                             tree.sort_children_by_size();
@@ -476,9 +515,9 @@ impl eframe::App for DiskApp {
         // Toast notification
         if let Some((ref msg, instant)) = self.toast_message {
             let elapsed = instant.elapsed().as_secs_f32();
-            if elapsed < 3.0 {
-                let alpha = if elapsed > 2.0 {
-                    ((3.0 - elapsed) * 255.0) as u8
+            if elapsed < TOAST_DURATION_SECS {
+                let alpha = if elapsed > TOAST_FADE_START_SECS {
+                    ((TOAST_DURATION_SECS - elapsed) * 255.0) as u8
                 } else {
                     255
                 };
