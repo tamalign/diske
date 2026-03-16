@@ -42,6 +42,7 @@ pub struct DiskApp {
 
     // Context menu
     context_menu_node: Option<usize>,
+    trash_confirm: Option<(PathBuf, String, usize)>, // (path, name, node_idx)
 
     // Paths trashed during current scan (to filter from incoming scan results)
     trashed_paths: HashSet<PathBuf>,
@@ -95,6 +96,7 @@ impl DiskApp {
             current_scan_path: String::new(),
             layout_cache: None,
             context_menu_node: None,
+            trash_confirm: None,
             trashed_paths: HashSet::new(),
             search_query: String::new(),
             search_results: Vec::new(),
@@ -502,7 +504,7 @@ impl eframe::App for DiskApp {
         enum ContextAction {
             Reveal(PathBuf),
             CopyPath(String),
-            Trash(PathBuf, String, usize),
+            ConfirmTrash(PathBuf, String, usize),
             None,
         }
         let mut action = ContextAction::None;
@@ -530,7 +532,7 @@ impl eframe::App for DiskApp {
                             .button(egui::RichText::new("Move to Trash").color(egui::Color32::RED))
                             .clicked()
                         {
-                            action = ContextAction::Trash(path.clone(), name.clone(), node_idx);
+                            action = ContextAction::ConfirmTrash(path.clone(), name.clone(), node_idx);
                         }
                     });
 
@@ -562,38 +564,89 @@ impl eframe::App for DiskApp {
                 ));
                 self.context_menu_node = None;
             }
-            ContextAction::Trash(path, name, node_idx) => {
-                match trash::delete(&path) {
-                    Ok(()) => {
-                        // Track trashed path so incoming scan results won't restore it
-                        self.trashed_paths.insert(path.clone());
-                        if let Some(ref mut tree) = self.tree {
-                            tree.remove_node(node_idx);
-                            tree.sort_children_by_size();
-                            self.layout_cache = None;
-                            self.category_cache = None;
-
-                            // Update disk cache with the modified tree
-                            let tree_for_cache = tree.clone();
-                            std::thread::spawn(move || {
-                                let _ = cache::save(&tree_for_cache);
-                            });
-                        }
-                        self.toast_message = Some((
-                            format!("Moved to Trash: {}", name),
-                            std::time::Instant::now(),
-                        ));
-                    }
-                    Err(e) => {
-                        self.toast_message = Some((
-                            format!("Failed to trash: {}", e),
-                            std::time::Instant::now(),
-                        ));
-                    }
-                }
+            ContextAction::ConfirmTrash(path, name, node_idx) => {
+                self.trash_confirm = Some((path, name, node_idx));
                 self.context_menu_node = None;
             }
             ContextAction::None => {}
+        }
+
+        // Trash confirmation dialog
+        let mut trash_action: Option<(PathBuf, String, usize)> = None;
+        let mut trash_cancel = false;
+        if let Some((ref path, ref name, node_idx)) = self.trash_confirm {
+            let size_text = self
+                .tree
+                .as_ref()
+                .map(|t| {
+                    let s = t.get(node_idx).size;
+                    if s >= 1_073_741_824 {
+                        format!("{:.1} GB", s as f64 / 1_073_741_824.0)
+                    } else if s >= 1_048_576 {
+                        format!("{:.1} MB", s as f64 / 1_048_576.0)
+                    } else {
+                        format!("{:.1} KB", s as f64 / 1024.0)
+                    }
+                })
+                .unwrap_or_default();
+
+            egui::Window::new("Confirm Move to Trash")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("Move \"{}\" ({}) to Trash?", name, size_text));
+                    ui.label(
+                        egui::RichText::new(path.to_string_lossy().to_string())
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            trash_cancel = true;
+                        }
+                        if ui
+                            .button(egui::RichText::new("Move to Trash").color(egui::Color32::RED))
+                            .clicked()
+                        {
+                            trash_action =
+                                Some((path.clone(), name.clone(), node_idx));
+                        }
+                    });
+                });
+        }
+        if trash_cancel {
+            self.trash_confirm = None;
+        }
+        if let Some((path, name, node_idx)) = trash_action {
+            match trash::delete(&path) {
+                Ok(()) => {
+                    self.trashed_paths.insert(path.clone());
+                    if let Some(ref mut tree) = self.tree {
+                        tree.remove_node(node_idx);
+                        tree.sort_children_by_size();
+                        self.layout_cache = None;
+                        self.category_cache = None;
+
+                        let tree_for_cache = tree.clone();
+                        std::thread::spawn(move || {
+                            let _ = cache::save(&tree_for_cache);
+                        });
+                    }
+                    self.toast_message = Some((
+                        format!("Moved to Trash: {}", name),
+                        std::time::Instant::now(),
+                    ));
+                }
+                Err(e) => {
+                    self.toast_message = Some((
+                        format!("Failed to trash: {}", e),
+                        std::time::Instant::now(),
+                    ));
+                }
+            }
+            self.trash_confirm = None;
         }
 
         // Toast notification
