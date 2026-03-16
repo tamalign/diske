@@ -249,6 +249,14 @@ impl eframe::App for DiskApp {
                             self.start_scan(root);
                         }
                     }
+                    if ui.button("Trash").clicked() {
+                        if let Some(home) = dirs_next::home_dir() {
+                            let trash_path = home.join(".Trash");
+                            if trash_path.exists() {
+                                self.start_scan(trash_path);
+                            }
+                        }
+                    }
 
                     ui.separator();
 
@@ -360,7 +368,15 @@ impl eframe::App for DiskApp {
             self.state = AppState::Welcome;
         }
 
-        // Context menu
+        // Context menu — collect action to execute after immutable borrow ends
+        enum ContextAction {
+            Reveal(PathBuf),
+            CopyPath(String),
+            Trash(PathBuf, String, usize),
+            None,
+        }
+        let mut action = ContextAction::None;
+
         if let Some(node_idx) = self.context_menu_node {
             if let Some(ref tree) = self.tree {
                 let node = tree.get(node_idx);
@@ -374,50 +390,17 @@ impl eframe::App for DiskApp {
                     .resizable(false)
                     .show(ctx, |ui| {
                         if ui.button("Reveal in Finder").clicked() {
-                            // Use `open -R` to reveal and highlight in Finder
-                            match Command::new("open").arg("-R").arg(&path).spawn() {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    self.toast_message = Some((
-                                        format!("Failed to reveal: {}", e),
-                                        std::time::Instant::now(),
-                                    ));
-                                }
-                            }
-                            self.context_menu_node = None;
+                            action = ContextAction::Reveal(path.clone());
                         }
                         if ui.button("Copy Path").clicked() {
-                            ui.ctx().copy_text(path.to_string_lossy().to_string());
-                            self.toast_message = Some((
-                                "Path copied!".to_string(),
-                                std::time::Instant::now(),
-                            ));
-                            self.context_menu_node = None;
+                            action = ContextAction::CopyPath(path.to_string_lossy().to_string());
                         }
                         ui.separator();
                         if ui
                             .button(egui::RichText::new("Move to Trash").color(egui::Color32::RED))
                             .clicked()
                         {
-                            match trash::delete(&path) {
-                                Ok(()) => {
-                                    if let Some(ref mut tree) = self.tree {
-                                        tree.remove_node(node_idx);
-                                        self.layout_cache = None;
-                                    }
-                                    self.toast_message = Some((
-                                        format!("Moved to Trash: {}", name),
-                                        std::time::Instant::now(),
-                                    ));
-                                }
-                                Err(e) => {
-                                    self.toast_message = Some((
-                                        format!("Failed to trash: {}", e),
-                                        std::time::Instant::now(),
-                                    ));
-                                }
-                            }
-                            self.context_menu_node = None;
+                            action = ContextAction::Trash(path.clone(), name.clone(), node_idx);
                         }
                     });
 
@@ -425,6 +408,52 @@ impl eframe::App for DiskApp {
                     self.context_menu_node = None;
                 }
             }
+        }
+
+        // Execute context action outside the borrow
+        match action {
+            ContextAction::Reveal(path) => {
+                match Command::new("open").arg("-R").arg(&path).spawn() {
+                    Ok(_) => {}
+                    Err(e) => {
+                        self.toast_message = Some((
+                            format!("Failed to reveal: {}", e),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                self.context_menu_node = None;
+            }
+            ContextAction::CopyPath(path_str) => {
+                ctx.copy_text(path_str);
+                self.toast_message = Some((
+                    "Path copied!".to_string(),
+                    std::time::Instant::now(),
+                ));
+                self.context_menu_node = None;
+            }
+            ContextAction::Trash(path, name, node_idx) => {
+                match trash::delete(&path) {
+                    Ok(()) => {
+                        if let Some(ref mut tree) = self.tree {
+                            tree.remove_node(node_idx);
+                            self.layout_cache = None;
+                        }
+                        self.toast_message = Some((
+                            format!("Moved to Trash: {}", name),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                    Err(e) => {
+                        self.toast_message = Some((
+                            format!("Failed to trash: {}", e),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                self.context_menu_node = None;
+            }
+            ContextAction::None => {}
         }
 
         // Toast notification
