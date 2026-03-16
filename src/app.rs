@@ -289,6 +289,23 @@ impl DiskApp {
 // --- UI helpers ---
 
 impl DiskApp {
+    fn has_blocking_overlay(&self) -> bool {
+        self.context_menu_node.is_some() || self.trash_confirm.is_some()
+    }
+
+    fn handle_treemap_response(&mut self, response: treemap_view::TreemapResponse) {
+        if self.has_blocking_overlay() {
+            return;
+        }
+
+        if let Some(dir_idx) = response.clicked_dir {
+            self.navigate_to(dir_idx);
+        }
+        if let Some(node_idx) = response.right_clicked {
+            self.context_menu_node = Some(node_idx);
+        }
+    }
+
     fn show_toast(&mut self, msg: &str) {
         self.toast_message = Some((msg.to_string(), std::time::Instant::now()));
     }
@@ -468,13 +485,7 @@ impl DiskApp {
                         &mut self.layout_cache,
                         &highlighted,
                     );
-
-                    if let Some(dir_idx) = response.clicked_dir {
-                        self.navigate_to(dir_idx);
-                    }
-                    if let Some(node_idx) = response.right_clicked {
-                        self.context_menu_node = Some(node_idx);
-                    }
+                    self.handle_treemap_response(response);
                 }
                 AppState::Error(msg) => {
                     let msg = msg.clone();
@@ -505,12 +516,11 @@ impl DiskApp {
                 let path = node.path.clone();
                 let name = node.name.clone();
 
-                let mut open = true;
-                egui::Window::new(format!("Actions: {}", name))
-                    .open(&mut open)
-                    .collapsible(false)
-                    .resizable(false)
+                let modal_response = egui::Modal::new(egui::Id::new("context_menu_modal"))
                     .show(ctx, |ui| {
+                        ui.heading(format!("Actions: {}", name));
+                        ui.separator();
+
                         if ui.button("Reveal in Finder").clicked() {
                             action = ContextAction::Reveal(path.clone());
                         }
@@ -531,7 +541,7 @@ impl DiskApp {
                         }
                     });
 
-                if !open {
+                if modal_response.should_close() {
                     self.context_menu_node = None;
                 }
             }
@@ -577,11 +587,11 @@ impl DiskApp {
                 })
                 .unwrap_or_default();
 
-            egui::Window::new("Confirm Move to Trash")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            let modal_response = egui::Modal::new(egui::Id::new("trash_confirm_modal"))
                 .show(ctx, |ui| {
+                    ui.heading("Confirm Move to Trash");
+                    ui.separator();
+
                     ui.label(format!("Move \"{}\" ({}) to Trash?", name, size_text));
                     ui.label(
                         egui::RichText::new(path.to_string_lossy().to_string())
@@ -604,6 +614,10 @@ impl DiskApp {
                         }
                     });
                 });
+
+            if modal_response.should_close() {
+                trash_cancel = true;
+            }
         }
 
         if trash_cancel {
@@ -668,6 +682,74 @@ impl DiskApp {
                 self.toast_message = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_app() -> DiskApp {
+        DiskApp {
+            state: AppState::Viewing,
+            tree: None,
+            current_root: 1,
+            navigation_history: Vec::new(),
+            scan_receiver: None,
+            scan_root: None,
+            files_scanned: 0,
+            bytes_scanned: 0,
+            current_scan_path: String::new(),
+            layout_cache: None,
+            context_menu_node: None,
+            trash_confirm: None,
+            trashed_paths: HashSet::new(),
+            search_query: String::new(),
+            search_results: Vec::new(),
+            category_cache: None,
+            toast_message: None,
+        }
+    }
+
+    #[test]
+    fn treemap_click_navigates_when_no_overlay_is_open() {
+        let mut app = test_app();
+
+        app.handle_treemap_response(treemap_view::TreemapResponse {
+            clicked_dir: Some(7),
+            right_clicked: None,
+        });
+
+        assert_eq!(app.current_root, 7);
+        assert_eq!(app.navigation_history, vec![1]);
+    }
+
+    #[test]
+    fn treemap_click_is_ignored_while_context_menu_is_open() {
+        let mut app = test_app();
+        app.context_menu_node = Some(99);
+
+        app.handle_treemap_response(treemap_view::TreemapResponse {
+            clicked_dir: Some(7),
+            right_clicked: None,
+        });
+
+        assert_eq!(app.current_root, 1);
+        assert!(app.navigation_history.is_empty());
+        assert_eq!(app.context_menu_node, Some(99));
+    }
+
+    #[test]
+    fn treemap_right_click_is_ignored_while_trash_dialog_is_open() {
+        let mut app = test_app();
+        app.trash_confirm = Some((PathBuf::from("/tmp/file"), "file".to_string(), 5));
+
+        app.handle_treemap_response(treemap_view::TreemapResponse {
+            clicked_dir: None,
+            right_clicked: Some(7),
+        });
+
+        assert_eq!(app.context_menu_node, None);
     }
 }
 

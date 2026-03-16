@@ -59,9 +59,15 @@ cargo run
 # リリースビルド
 cargo build --release
 
-# .appバンドル作成（ダブルクリックで起動可能）
+# .appバンドル作成（毎回 bundle を作り直す）
 ./bundle.sh
 # → target/diske.app
+
+# 作成後にそのまま起動
+./bundle.sh --open
+
+# 開発用に debug バイナリを bundle 化
+./bundle.sh --debug --open
 
 # テスト
 cargo test
