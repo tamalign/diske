@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use crossbeam_channel::Sender;
@@ -75,7 +76,11 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
         let size = if is_dir {
             0
         } else {
-            entry.metadata().map(|m| m.len()).unwrap_or(0)
+            // Use st_blocks * 512 for actual disk usage (handles sparse files correctly)
+            entry
+                .metadata()
+                .map(|m| m.blocks() * 512)
+                .unwrap_or(0)
         };
 
         let index = tree.add_node(name, size, parent_index, is_dir, path.clone());
