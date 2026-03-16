@@ -154,6 +154,24 @@ impl DiskApp {
                         self.state = AppState::Viewing;
                     }
                     ScanMessage::Complete(tree) => {
+                        // If scan returned only the root node (empty/no access), show error
+                        if tree.len() <= 1 {
+                            if self.tree.is_none() {
+                                self.state = AppState::Error(
+                                    "No files found (directory may be empty or access denied)".to_string(),
+                                );
+                            } else {
+                                // Keep existing tree, just show toast
+                                self.toast_message = Some((
+                                    "Scan returned no results (access denied?)".to_string(),
+                                    std::time::Instant::now(),
+                                ));
+                                self.state = AppState::Viewing;
+                            }
+                            self.scan_receiver = None;
+                            return;
+                        }
+
                         self.files_scanned = tree.len() as u64;
                         self.bytes_scanned = tree.get(tree.root).size;
 
@@ -250,12 +268,8 @@ impl eframe::App for DiskApp {
                         }
                     }
                     if ui.button("Trash").clicked() {
-                        if let Some(home) = dirs_next::home_dir() {
-                            let trash_path = home.join(".Trash");
-                            if trash_path.exists() {
-                                self.start_scan(trash_path);
-                            }
-                        }
+                        // Open Finder's Trash view (~/.Trash is SIP-protected)
+                        let _ = Command::new("open").arg("trash://").spawn();
                     }
 
                     ui.separator();
