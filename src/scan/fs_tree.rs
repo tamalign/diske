@@ -137,6 +137,26 @@ impl FsTree {
             .and_then(|e| e.to_str())
     }
 
+    /// Search nodes by name (case-insensitive). Returns indices sorted by size descending.
+    pub fn search(&self, query: &str, max_results: usize) -> Vec<usize> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let query_lower = query.to_lowercase();
+        let mut matches: Vec<(usize, u64)> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| {
+                node.size > 0 && node.name.to_lowercase().contains(&query_lower)
+            })
+            .map(|(i, node)| (i, node.size))
+            .collect();
+        matches.sort_by(|a, b| b.1.cmp(&a.1));
+        matches.truncate(max_results);
+        matches.into_iter().map(|(i, _)| i).collect()
+    }
+
     /// Remove a node and all its descendants. Returns the removed size.
     pub fn remove_node(&mut self, index: usize) -> u64 {
         let size = self.nodes[index].size;
@@ -243,6 +263,37 @@ mod tests {
 
         assert_eq!(tree.extension(f), Some("png"));
         assert_eq!(tree.extension(d), None);
+    }
+
+    #[test]
+    fn test_search() {
+        let mut tree = FsTree::new(Path::new("/test"));
+        tree.add_node("photo.jpg".into(), 500, 0, false, PathBuf::from("/test/photo.jpg"));
+        tree.add_node("photo_backup.jpg".into(), 300, 0, false, PathBuf::from("/test/photo_backup.jpg"));
+        tree.add_node("readme.md".into(), 100, 0, false, PathBuf::from("/test/readme.md"));
+        tree.compute_sizes();
+
+        let results = tree.search("photo", 10);
+        assert_eq!(results.len(), 2);
+        // Should be sorted by size descending
+        assert_eq!(tree.get(results[0]).size, 500);
+        assert_eq!(tree.get(results[1]).size, 300);
+
+        // Case insensitive
+        let results = tree.search("PHOTO", 10);
+        assert_eq!(results.len(), 2);
+
+        // Empty query
+        let results = tree.search("", 10);
+        assert!(results.is_empty());
+
+        // No match
+        let results = tree.search("nonexistent", 10);
+        assert!(results.is_empty());
+
+        // Max results
+        let results = tree.search("photo", 1);
+        assert_eq!(results.len(), 1);
     }
 
     #[test]

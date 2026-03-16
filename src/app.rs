@@ -10,6 +10,7 @@ use crate::scan::fs_tree::FsTree;
 const TOAST_DURATION_SECS: f32 = 3.0;
 const TOAST_FADE_START_SECS: f32 = 2.0;
 const SIDEBAR_DEFAULT_WIDTH: f32 = 220.0;
+const SEARCH_MAX_RESULTS: usize = 100;
 use crate::scan::walker::{ScanMessage, scan_directory};
 use crate::treemap::layout::LayoutRect;
 use crate::ui::{breadcrumbs, sidebar, status_bar, treemap_view};
@@ -43,6 +44,10 @@ pub struct DiskApp {
 
     // Paths trashed during current scan (to filter from incoming scan results)
     trashed_paths: HashSet<PathBuf>,
+
+    // Search
+    search_query: String,
+    search_results: Vec<usize>,
 
     // Toast message
     toast_message: Option<(String, std::time::Instant)>,
@@ -87,6 +92,8 @@ impl DiskApp {
             layout_cache: None,
             context_menu_node: None,
             trashed_paths: HashSet::new(),
+            search_query: String::new(),
+            search_results: Vec::new(),
             toast_message: None,
         };
 
@@ -273,8 +280,8 @@ impl eframe::App for DiskApp {
             ctx.request_repaint();
         }
 
-        // Keyboard shortcuts
-        if self.state == AppState::Viewing {
+        // Keyboard shortcuts (only when no text field is focused)
+        if self.state == AppState::Viewing && !ctx.wants_keyboard_input() {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace)) {
                 self.navigate_back();
             }
@@ -314,11 +321,35 @@ impl eframe::App for DiskApp {
                     }
                 }
 
-                // Show scanning indicator in top bar
-                if self.is_scanning() && self.state == AppState::Viewing {
+                // Right-aligned: search box and scanning indicator
+                if self.state == AppState::Viewing {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spinner();
-                        ui.label("Scanning...");
+                        if self.is_scanning() {
+                            ui.spinner();
+                            ui.label("Scanning...");
+                        }
+
+                        let prev_query = self.search_query.clone();
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.search_query)
+                                .hint_text("Search files...")
+                                .desired_width(180.0),
+                        );
+                        // Clear search on Escape
+                        if response.has_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        {
+                            self.search_query.clear();
+                            self.search_results.clear();
+                            response.surrender_focus();
+                        }
+                        // Update search results when query changes
+                        if self.search_query != prev_query {
+                            if let Some(ref tree) = self.tree {
+                                self.search_results =
+                                    tree.search(&self.search_query, SEARCH_MAX_RESULTS);
+                            }
+                        }
                     });
                 }
             });
@@ -341,7 +372,12 @@ impl eframe::App for DiskApp {
                 .default_width(SIDEBAR_DEFAULT_WIDTH)
                 .show(ctx, |ui| {
                     if let Some(ref tree) = self.tree {
-                        if let Some(target) = sidebar::draw_sidebar(ui, tree, self.current_root) {
+                        if let Some(target) = sidebar::draw_sidebar(
+                            ui,
+                            tree,
+                            self.current_root,
+                            &self.search_results,
+                        ) {
                             self.navigate_to(target);
                         }
                     }
@@ -381,11 +417,36 @@ impl eframe::App for DiskApp {
                 }
                 AppState::Viewing => {
                     let tree = self.tree.as_ref().unwrap();
+                    // Build highlighted set: search results that are visible children
+                    // (or ancestors of search results that are children)
+                    let highlighted: HashSet<usize> = if self.search_query.is_empty() {
+                        HashSet::new()
+                    } else {
+                        let children: HashSet<usize> =
+                            tree.children_of(self.current_root).iter().copied().collect();
+                        // Highlight a child if it matches OR contains a descendant that matches
+                        self.search_results
+                            .iter()
+                            .filter_map(|&idx| {
+                                if children.contains(&idx) {
+                                    return Some(idx);
+                                }
+                                // Walk up ancestors to find if any child contains this result
+                                for &anc in &tree.ancestors(idx) {
+                                    if children.contains(&anc) {
+                                        return Some(anc);
+                                    }
+                                }
+                                None
+                            })
+                            .collect()
+                    };
                     let response = treemap_view::draw_treemap(
                         ui,
                         tree,
                         self.current_root,
                         &mut self.layout_cache,
+                        &highlighted,
                     );
 
                     if let Some(dir_idx) = response.clicked_dir {

@@ -80,10 +80,12 @@ fn get_all_volumes() -> Vec<VolumeInfo> {
 
 /// Draw sidebar with storage info, top largest files, and legend.
 /// Returns Some(node_index) if user clicked an item to navigate to.
+/// When `search_results` is non-empty, shows search results instead of largest items.
 pub fn draw_sidebar(
     ui: &mut egui::Ui,
     tree: &FsTree,
     current_root: usize,
+    search_results: &[usize],
 ) -> Option<usize> {
     let mut navigate_to = None;
 
@@ -146,19 +148,26 @@ pub fn draw_sidebar(
     ui.label(format!("Items: {}", node.descendant_count));
     ui.separator();
 
-    // Top largest items in current view
-    ui.strong("Largest Items");
-    ui.add_space(4.0);
-
-    let children = tree.children_of(current_root);
-    let mut sorted: Vec<usize> = children.to_vec();
-    sorted.sort_by(|&a, &b| tree.get(b).size.cmp(&tree.get(a).size));
-    sorted.truncate(TOP_ITEMS_COUNT);
+    // Show search results or top largest items
+    let items_to_show: Vec<usize>;
+    if !search_results.is_empty() {
+        ui.strong(format!("Search Results ({})", search_results.len()));
+        ui.add_space(4.0);
+        items_to_show = search_results.to_vec();
+    } else {
+        ui.strong("Largest Items");
+        ui.add_space(4.0);
+        let children = tree.children_of(current_root);
+        let mut sorted: Vec<usize> = children.to_vec();
+        sorted.sort_by(|&a, &b| tree.get(b).size.cmp(&tree.get(a).size));
+        sorted.truncate(TOP_ITEMS_COUNT);
+        items_to_show = sorted;
+    }
 
     egui::ScrollArea::vertical()
         .max_height(ui.available_height() - SIDEBAR_SCROLL_BOTTOM_MARGIN)
         .show(ui, |ui| {
-            for &idx in &sorted {
+            for &idx in &items_to_show {
                 let item = tree.get(idx);
                 if item.size == 0 {
                     continue;
@@ -179,12 +188,24 @@ pub fn draw_sidebar(
                         format_size(item.size)
                     );
 
+                    // In search results, directories are clickable to navigate
                     if item.is_dir {
                         if ui.link(&label_text).clicked() {
                             navigate_to = Some(idx);
                         }
                     } else {
-                        ui.label(&label_text);
+                        // Files in search results: click to navigate to parent
+                        if !search_results.is_empty() {
+                            if let Some(parent) = item.parent {
+                                if ui.link(&label_text).clicked() {
+                                    navigate_to = Some(parent);
+                                }
+                            } else {
+                                ui.label(&label_text);
+                            }
+                        } else {
+                            ui.label(&label_text);
+                        }
                     }
                 });
             }

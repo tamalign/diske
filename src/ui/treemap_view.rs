@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use egui::{Color32, FontId, LayerId, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::scan::fs_tree::FsTree;
@@ -19,11 +21,13 @@ pub struct TreemapResponse {
 }
 
 /// Render the treemap for the given node's children.
+/// `highlighted_nodes` are drawn with a bright border (e.g. search results).
 pub fn draw_treemap(
     ui: &mut egui::Ui,
     tree: &FsTree,
     current_root: usize,
     layout_cache: &mut Option<(usize, Vec2, Vec<LayoutRect>)>,
+    highlighted_nodes: &HashSet<usize>,
 ) -> TreemapResponse {
     let available = ui.available_size();
     let (response, painter) = ui.allocate_painter(available, Sense::hover());
@@ -56,7 +60,7 @@ pub fn draw_treemap(
         let new_layout = squarify(
             &items,
             (rect.min.x, rect.min.y, rect.width(), rect.height()),
-            1.5,
+            TREEMAP_PADDING,
         );
         *layout_cache = Some((current_root, available, new_layout.clone()));
         new_layout
@@ -84,6 +88,8 @@ pub fn draw_treemap(
         }
 
         let base_color = color_for_node(tree, lr.node_index);
+        let has_search = !highlighted_nodes.is_empty();
+        let is_highlighted = highlighted_nodes.contains(&lr.node_index);
 
         let is_hovered = mouse_pos
             .map(|p| item_rect.contains(p))
@@ -92,6 +98,9 @@ pub fn draw_treemap(
         let fill_color = if is_hovered {
             hovered_index = Some(lr.node_index);
             lighten(base_color, 0.2)
+        } else if has_search && !is_highlighted {
+            // Dim non-matching nodes during search
+            darken(base_color, 0.5)
         } else {
             base_color
         };
@@ -100,7 +109,9 @@ pub fn draw_treemap(
         painter.rect_filled(item_rect, 2.0, fill_color);
 
         // Border
-        if is_hovered {
+        if is_highlighted {
+            painter.rect_stroke(item_rect, 2.0, Stroke::new(2.0, Color32::YELLOW), StrokeKind::Outside);
+        } else if is_hovered {
             painter.rect_stroke(item_rect, 2.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Outside);
         } else {
             painter.rect_stroke(
