@@ -69,9 +69,17 @@ cargo build --release
 # 開発用に debug バイナリを bundle 化
 ./bundle.sh --debug --open
 
+# Release 用アセットをローカル生成
+./scripts/package-release.sh --label local-macos --release
+
 # テスト
 cargo test
 ```
+
+## GitHub Actions
+- `main` への push で `.github/workflows/release.yml` が起動
+- `macos-13` / `macos-14` でそれぞれビルドし、`.app.zip` と `tar.gz` を生成
+- GitHub Releases に `main-<short_sha>` の prerelease を自動作成してアセットを添付
 
 ## Known Constraints / Gotchas
 - **~/.Trash はSIP保護**: 直接スキャンできない。スキャンすると空ツリーが返る
