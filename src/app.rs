@@ -24,6 +24,13 @@ enum AppState {
     Error(String),
 }
 
+enum ContextAction {
+    Reveal(PathBuf),
+    CopyPath(String),
+    ConfirmTrash(PathBuf, String, usize),
+    None,
+}
+
 pub struct DiskApp {
     state: AppState,
     tree: Option<FsTree>,
@@ -57,6 +64,8 @@ pub struct DiskApp {
     // Toast message
     toast_message: Option<(String, std::time::Instant)>,
 }
+
+// --- Initialization and scan management ---
 
 impl DiskApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -112,7 +121,6 @@ impl DiskApp {
                 app.tree = Some(cached_tree);
                 app.state = AppState::Viewing;
             }
-            // Always start a fresh scan (will replace cache when done)
             app.start_scan_preserving_view(home);
         }
 
@@ -137,7 +145,6 @@ impl DiskApp {
         scan_directory(&path, tx);
     }
 
-    /// Start a scan but keep current tree visible (for background rescan with cache)
     fn start_scan_preserving_view(&mut self, path: PathBuf) {
         let (tx, rx) = unbounded();
         self.scan_receiver = Some(rx);
@@ -166,12 +173,9 @@ impl DiskApp {
                         self.current_scan_path = current_path;
                     }
                     ScanMessage::Snapshot(mut snapshot) => {
-                        // Remove any items trashed during this scan
                         self.apply_trashed_paths(&mut snapshot);
-                        // Update treemap with intermediate results during scan
                         self.bytes_scanned = snapshot.get(snapshot.root).size;
                         self.files_scanned = snapshot.len() as u64;
-                        // Reset navigation to root when updating snapshot
                         let was_at_root = self.current_root == 0;
                         self.tree = Some(snapshot);
                         if was_at_root || self.state == AppState::Scanning {
@@ -182,23 +186,17 @@ impl DiskApp {
                         self.state = AppState::Viewing;
                     }
                     ScanMessage::Complete(mut tree) => {
-                        // Remove any items trashed during this scan
                         self.apply_trashed_paths(&mut tree);
-                        // Clear trashed paths — scan is done, next scan won't include them
                         self.trashed_paths.clear();
 
-                        // If scan returned only the root node (empty/no access), show error
                         if tree.len() <= 1 {
                             if self.tree.is_none() {
                                 self.state = AppState::Error(
-                                    "No files found (directory may be empty or access denied)".to_string(),
+                                    "No files found (directory may be empty or access denied)"
+                                        .to_string(),
                                 );
                             } else {
-                                // Keep existing tree, just show toast
-                                self.toast_message = Some((
-                                    "Scan returned no results (access denied?)".to_string(),
-                                    std::time::Instant::now(),
-                                ));
+                                self.show_toast("Scan returned no results (access denied?)");
                                 self.state = AppState::Viewing;
                             }
                             self.scan_receiver = None;
@@ -208,7 +206,6 @@ impl DiskApp {
                         self.files_scanned = tree.len() as u64;
                         self.bytes_scanned = tree.get(tree.root).size;
 
-                        // Save to cache in background
                         let tree_for_cache = tree.clone();
                         std::thread::spawn(move || {
                             if let Err(e) = cache::save(&tree_for_cache) {
@@ -226,7 +223,6 @@ impl DiskApp {
                         return;
                     }
                     ScanMessage::Error(err) => {
-                        // Only show error if we don't have a tree to display
                         if self.tree.is_none() {
                             self.state = AppState::Error(err);
                         }
@@ -238,29 +234,6 @@ impl DiskApp {
         }
     }
 
-    fn navigate_to(&mut self, index: usize) {
-        self.navigation_history.push(self.current_root);
-        self.current_root = index;
-        self.layout_cache = None;
-        self.category_cache = None;
-    }
-
-    fn navigate_back(&mut self) {
-        if let Some(prev) = self.navigation_history.pop() {
-            self.current_root = prev;
-            self.layout_cache = None;
-            self.category_cache = None;
-        }
-    }
-
-    fn navigate_to_direct(&mut self, index: usize) {
-        self.navigation_history.push(self.current_root);
-        self.current_root = index;
-        self.layout_cache = None;
-        self.category_cache = None;
-    }
-
-    /// Remove trashed paths from an incoming scan tree so deleted items don't reappear.
     fn apply_trashed_paths(&self, tree: &mut FsTree) {
         if self.trashed_paths.is_empty() {
             return;
@@ -285,22 +258,42 @@ impl DiskApp {
     }
 }
 
-impl eframe::App for DiskApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Process scan messages
-        if self.is_scanning() {
-            self.process_scan_messages();
-            ctx.request_repaint();
-        }
+// --- Navigation ---
 
-        // Keyboard shortcuts (only when no text field is focused)
-        if self.state == AppState::Viewing && !ctx.wants_keyboard_input() {
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace)) {
-                self.navigate_back();
-            }
-        }
+impl DiskApp {
+    fn navigate_to(&mut self, index: usize) {
+        self.navigation_history.push(self.current_root);
+        self.current_root = index;
+        self.invalidate_caches();
+    }
 
-        // Top bar
+    fn navigate_back(&mut self) {
+        if let Some(prev) = self.navigation_history.pop() {
+            self.current_root = prev;
+            self.invalidate_caches();
+        }
+    }
+
+    fn navigate_to_direct(&mut self, index: usize) {
+        self.navigation_history.push(self.current_root);
+        self.current_root = index;
+        self.invalidate_caches();
+    }
+
+    fn invalidate_caches(&mut self) {
+        self.layout_cache = None;
+        self.category_cache = None;
+    }
+}
+
+// --- UI helpers ---
+
+impl DiskApp {
+    fn show_toast(&mut self, msg: &str) {
+        self.toast_message = Some((msg.to_string(), std::time::Instant::now()));
+    }
+
+    fn draw_top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Select Directory").clicked() {
@@ -317,8 +310,7 @@ impl eframe::App for DiskApp {
                     if ui.button("Home").clicked() {
                         self.navigation_history.push(self.current_root);
                         self.current_root = 0;
-                        self.layout_cache = None;
-                        self.category_cache = None;
+                        self.invalidate_caches();
                     }
                     if ui.button("Rescan").clicked() {
                         if let Some(root) = self.scan_root.clone() {
@@ -329,7 +321,9 @@ impl eframe::App for DiskApp {
                     ui.separator();
 
                     if let Some(ref tree) = self.tree {
-                        if let Some(target) = breadcrumbs::draw_breadcrumbs(ui, tree, self.current_root) {
+                        if let Some(target) =
+                            breadcrumbs::draw_breadcrumbs(ui, tree, self.current_root)
+                        {
                             self.navigate_to_direct(target);
                         }
                     }
@@ -337,39 +331,41 @@ impl eframe::App for DiskApp {
 
                 // Right-aligned: search box and scanning indicator
                 if self.state == AppState::Viewing {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.is_scanning() {
-                            ui.spinner();
-                            ui.label("Scanning...");
-                        }
-
-                        let prev_query = self.search_query.clone();
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut self.search_query)
-                                .hint_text("Search files...")
-                                .desired_width(180.0),
-                        );
-                        // Clear search on Escape
-                        if response.has_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Escape))
-                        {
-                            self.search_query.clear();
-                            self.search_results.clear();
-                            response.surrender_focus();
-                        }
-                        // Update search results when query changes
-                        if self.search_query != prev_query {
-                            if let Some(ref tree) = self.tree {
-                                self.search_results =
-                                    tree.search(&self.search_query, SEARCH_MAX_RESULTS);
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if self.is_scanning() {
+                                ui.spinner();
+                                ui.label("Scanning...");
                             }
-                        }
-                    });
+
+                            let prev_query = self.search_query.clone();
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut self.search_query)
+                                    .hint_text("Search files...")
+                                    .desired_width(180.0),
+                            );
+                            if response.has_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            {
+                                self.search_query.clear();
+                                self.search_results.clear();
+                                response.surrender_focus();
+                            }
+                            if self.search_query != prev_query {
+                                if let Some(ref tree) = self.tree {
+                                    self.search_results =
+                                        tree.search(&self.search_query, SEARCH_MAX_RESULTS);
+                                }
+                            }
+                        },
+                    );
                 }
             });
         });
+    }
 
-        // Status bar
+    fn draw_status_bar(&self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             status_bar::draw_status_bar(
                 ui,
@@ -379,36 +375,40 @@ impl eframe::App for DiskApp {
                 self.is_scanning(),
             );
         });
+    }
 
-        // Sidebar
-        if self.state == AppState::Viewing {
-            egui::SidePanel::left("sidebar")
-                .default_width(SIDEBAR_DEFAULT_WIDTH)
-                .show(ctx, |ui| {
-                    if let Some(ref tree) = self.tree {
-                        // Compute or reuse category sizes
-                        let cat_sizes = match &self.category_cache {
-                            Some((root, data)) if *root == self.current_root => data.clone(),
-                            _ => {
-                                let data = sidebar::compute_category_sizes(tree, self.current_root);
-                                self.category_cache = Some((self.current_root, data.clone()));
-                                data
-                            }
-                        };
-                        if let Some(target) = sidebar::draw_sidebar(
-                            ui,
-                            tree,
-                            self.current_root,
-                            &self.search_results,
-                            &cat_sizes,
-                        ) {
-                            self.navigate_to(target);
-                        }
-                    }
-                });
+    fn draw_sidebar(&mut self, ctx: &egui::Context) {
+        if self.state != AppState::Viewing {
+            return;
         }
+        egui::SidePanel::left("sidebar")
+            .default_width(SIDEBAR_DEFAULT_WIDTH)
+            .show(ctx, |ui| {
+                if let Some(ref tree) = self.tree {
+                    let cat_sizes = match &self.category_cache {
+                        Some((root, data)) if *root == self.current_root => data.clone(),
+                        _ => {
+                            let data =
+                                sidebar::compute_category_sizes(tree, self.current_root);
+                            self.category_cache =
+                                Some((self.current_root, data.clone()));
+                            data
+                        }
+                    };
+                    if let Some(target) = sidebar::draw_sidebar(
+                        ui,
+                        tree,
+                        self.current_root,
+                        &self.search_results,
+                        &cat_sizes,
+                    ) {
+                        self.navigate_to(target);
+                    }
+                }
+            });
+    }
 
-        // Central panel
+    fn draw_central_panel(&mut self, ctx: &egui::Context) {
         let mut reset_to_welcome = false;
         egui::CentralPanel::default().show(ctx, |ui| {
             match &self.state {
@@ -441,21 +441,17 @@ impl eframe::App for DiskApp {
                 }
                 AppState::Viewing => {
                     let tree = self.tree.as_ref().unwrap();
-                    // Build highlighted set: search results that are visible children
-                    // (or ancestors of search results that are children)
                     let highlighted: HashSet<usize> = if self.search_query.is_empty() {
                         HashSet::new()
                     } else {
                         let children: HashSet<usize> =
                             tree.children_of(self.current_root).iter().copied().collect();
-                        // Highlight a child if it matches OR contains a descendant that matches
                         self.search_results
                             .iter()
                             .filter_map(|&idx| {
                                 if children.contains(&idx) {
                                     return Some(idx);
                                 }
-                                // Walk up ancestors to find if any child contains this result
                                 for &anc in &tree.ancestors(idx) {
                                     if children.contains(&anc) {
                                         return Some(anc);
@@ -476,7 +472,6 @@ impl eframe::App for DiskApp {
                     if let Some(dir_idx) = response.clicked_dir {
                         self.navigate_to(dir_idx);
                     }
-
                     if let Some(node_idx) = response.right_clicked {
                         self.context_menu_node = Some(node_idx);
                     }
@@ -499,14 +494,9 @@ impl eframe::App for DiskApp {
         if reset_to_welcome {
             self.state = AppState::Welcome;
         }
+    }
 
-        // Context menu — collect action to execute after immutable borrow ends
-        enum ContextAction {
-            Reveal(PathBuf),
-            CopyPath(String),
-            ConfirmTrash(PathBuf, String, usize),
-            None,
-        }
+    fn draw_context_menu(&mut self, ctx: &egui::Context) {
         let mut action = ContextAction::None;
 
         if let Some(node_idx) = self.context_menu_node {
@@ -525,14 +515,19 @@ impl eframe::App for DiskApp {
                             action = ContextAction::Reveal(path.clone());
                         }
                         if ui.button("Copy Path").clicked() {
-                            action = ContextAction::CopyPath(path.to_string_lossy().to_string());
+                            action =
+                                ContextAction::CopyPath(path.to_string_lossy().to_string());
                         }
                         ui.separator();
                         if ui
-                            .button(egui::RichText::new("Move to Trash").color(egui::Color32::RED))
+                            .button(
+                                egui::RichText::new("Move to Trash")
+                                    .color(egui::Color32::RED),
+                            )
                             .clicked()
                         {
-                            action = ContextAction::ConfirmTrash(path.clone(), name.clone(), node_idx);
+                            action =
+                                ContextAction::ConfirmTrash(path.clone(), name.clone(), node_idx);
                         }
                     });
 
@@ -542,26 +537,16 @@ impl eframe::App for DiskApp {
             }
         }
 
-        // Execute context action outside the borrow
         match action {
             ContextAction::Reveal(path) => {
-                match Command::new("open").arg("-R").arg(&path).spawn() {
-                    Ok(_) => {}
-                    Err(e) => {
-                        self.toast_message = Some((
-                            format!("Failed to reveal: {}", e),
-                            std::time::Instant::now(),
-                        ));
-                    }
+                if let Err(e) = Command::new("open").arg("-R").arg(&path).spawn() {
+                    self.show_toast(&format!("Failed to reveal: {}", e));
                 }
                 self.context_menu_node = None;
             }
             ContextAction::CopyPath(path_str) => {
                 ctx.copy_text(path_str);
-                self.toast_message = Some((
-                    "Path copied!".to_string(),
-                    std::time::Instant::now(),
-                ));
+                self.show_toast("Path copied!");
                 self.context_menu_node = None;
             }
             ContextAction::ConfirmTrash(path, name, node_idx) => {
@@ -570,10 +555,12 @@ impl eframe::App for DiskApp {
             }
             ContextAction::None => {}
         }
+    }
 
-        // Trash confirmation dialog
+    fn draw_trash_confirm(&mut self, ctx: &egui::Context) {
         let mut trash_action: Option<(PathBuf, String, usize)> = None;
         let mut trash_cancel = false;
+
         if let Some((ref path, ref name, node_idx)) = self.trash_confirm {
             let size_text = self
                 .tree
@@ -607,49 +594,50 @@ impl eframe::App for DiskApp {
                             trash_cancel = true;
                         }
                         if ui
-                            .button(egui::RichText::new("Move to Trash").color(egui::Color32::RED))
+                            .button(
+                                egui::RichText::new("Move to Trash")
+                                    .color(egui::Color32::RED),
+                            )
                             .clicked()
                         {
-                            trash_action =
-                                Some((path.clone(), name.clone(), node_idx));
+                            trash_action = Some((path.clone(), name.clone(), node_idx));
                         }
                     });
                 });
         }
+
         if trash_cancel {
             self.trash_confirm = None;
         }
         if let Some((path, name, node_idx)) = trash_action {
-            match trash::delete(&path) {
-                Ok(()) => {
-                    self.trashed_paths.insert(path.clone());
-                    if let Some(ref mut tree) = self.tree {
-                        tree.remove_node(node_idx);
-                        tree.sort_children_by_size();
-                        self.layout_cache = None;
-                        self.category_cache = None;
-
-                        let tree_for_cache = tree.clone();
-                        std::thread::spawn(move || {
-                            let _ = cache::save(&tree_for_cache);
-                        });
-                    }
-                    self.toast_message = Some((
-                        format!("Moved to Trash: {}", name),
-                        std::time::Instant::now(),
-                    ));
-                }
-                Err(e) => {
-                    self.toast_message = Some((
-                        format!("Failed to trash: {}", e),
-                        std::time::Instant::now(),
-                    ));
-                }
-            }
-            self.trash_confirm = None;
+            self.execute_trash(path, name, node_idx);
         }
+    }
 
-        // Toast notification
+    fn execute_trash(&mut self, path: PathBuf, name: String, node_idx: usize) {
+        match trash::delete(&path) {
+            Ok(()) => {
+                self.trashed_paths.insert(path);
+                if let Some(ref mut tree) = self.tree {
+                    tree.remove_node(node_idx);
+                    tree.sort_children_by_size();
+
+                    let tree_for_cache = tree.clone();
+                    std::thread::spawn(move || {
+                        let _ = cache::save(&tree_for_cache);
+                    });
+                }
+                self.invalidate_caches();
+                self.show_toast(&format!("Moved to Trash: {}", name));
+            }
+            Err(e) => {
+                self.show_toast(&format!("Failed to trash: {}", e));
+            }
+        }
+        self.trash_confirm = None;
+    }
+
+    fn draw_toast(&mut self, ctx: &egui::Context) {
         if let Some((ref msg, instant)) = self.toast_message {
             let elapsed = instant.elapsed().as_secs_f32();
             if elapsed < TOAST_DURATION_SECS {
@@ -667,8 +655,11 @@ impl eframe::App for DiskApp {
                             .inner_margin(egui::Margin::same(12))
                             .show(ui, |ui| {
                                 ui.label(
-                                    egui::RichText::new(msg)
-                                        .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha)),
+                                    egui::RichText::new(msg).color(
+                                        egui::Color32::from_rgba_unmultiplied(
+                                            255, 255, 255, alpha,
+                                        ),
+                                    ),
                                 );
                             });
                     });
@@ -677,5 +668,33 @@ impl eframe::App for DiskApp {
                 self.toast_message = None;
             }
         }
+    }
+}
+
+// --- Main update loop ---
+
+impl eframe::App for DiskApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.is_scanning() {
+            self.process_scan_messages();
+            ctx.request_repaint();
+        }
+
+        // Keyboard shortcuts (only when no text field is focused)
+        if self.state == AppState::Viewing && !ctx.wants_keyboard_input() {
+            if ctx.input(|i| {
+                i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace)
+            }) {
+                self.navigate_back();
+            }
+        }
+
+        self.draw_top_bar(ctx);
+        self.draw_status_bar(ctx);
+        self.draw_sidebar(ctx);
+        self.draw_central_panel(ctx);
+        self.draw_context_menu(ctx);
+        self.draw_trash_confirm(ctx);
+        self.draw_toast(ctx);
     }
 }
