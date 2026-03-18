@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory=$true)]
     [string]$Label,
-    [switch]$Debug
+    [switch]$DebugBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +9,7 @@ $AppName = "diske"
 $RepoDir = (Resolve-Path "$PSScriptRoot/..").Path
 Set-Location $RepoDir
 
-$Profile = if ($Debug) { "debug" } else { "release" }
+$Profile = if ($DebugBuild) { "debug" } else { "release" }
 $Version = (Select-String -Path "Cargo.toml" -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
 
 $DistDir = Join-Path $RepoDir "dist"
