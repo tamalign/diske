@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -79,7 +80,12 @@ fn do_scan(root: &Path, tx: &Sender<ScanMessage>) -> Result<FsTree, String> {
         } else {
             entry
                 .metadata()
-                .map(|m| m.blocks() * 512)
+                .map(|m| {
+                    #[cfg(unix)]
+                    { m.blocks() * 512 }
+                    #[cfg(not(unix))]
+                    { m.len() }
+                })
                 .unwrap_or(0)
         };
 

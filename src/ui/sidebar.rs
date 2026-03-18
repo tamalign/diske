@@ -13,6 +13,7 @@ struct VolumeInfo {
     available: u64,
 }
 
+#[cfg(unix)]
 fn get_volume_info(path: &Path) -> Option<VolumeInfo> {
     use std::ffi::CString;
     let path_cstr = CString::new(path.to_string_lossy().as_bytes()).ok()?;
@@ -26,7 +27,6 @@ fn get_volume_info(path: &Path) -> Option<VolumeInfo> {
         let total = stat.f_blocks as u64 * block_size;
         let available = stat.f_bavail as u64 * block_size;
 
-        // Get mount point name
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -40,6 +40,40 @@ fn get_volume_info(path: &Path) -> Option<VolumeInfo> {
     }
 }
 
+#[cfg(windows)]
+fn get_volume_info(path: &Path) -> Option<VolumeInfo> {
+    use std::os::windows::ffi::OsStrExt;
+    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+
+    let mut free_bytes_available: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut _total_free_bytes: u64 = 0;
+
+    let ok = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+            path_wide.as_ptr(),
+            &mut free_bytes_available,
+            &mut total_bytes,
+            &mut _total_free_bytes,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+    Some(VolumeInfo {
+        name,
+        total: total_bytes,
+        available: free_bytes_available,
+    })
+}
+
+#[cfg(unix)]
 fn get_all_volumes() -> Vec<VolumeInfo> {
     let mut volumes = Vec::new();
 
@@ -75,6 +109,27 @@ fn get_all_volumes() -> Vec<VolumeInfo> {
         }
     }
 
+    volumes
+}
+
+#[cfg(windows)]
+fn get_all_volumes() -> Vec<VolumeInfo> {
+    let mut volumes = Vec::new();
+    // Check drive letters A: through Z:
+    for letter in b'A'..=b'Z' {
+        let drive = format!("{}:\\", letter as char);
+        let path = Path::new(&drive);
+        if path.exists() {
+            if let Some(info) = get_volume_info(path) {
+                let name = if info.name.is_empty() || info.name == "\\" {
+                    format!("Drive ({}:)", letter as char)
+                } else {
+                    info.name
+                };
+                volumes.push(VolumeInfo { name, ..info });
+            }
+        }
+    }
     volumes
 }
 

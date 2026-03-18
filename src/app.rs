@@ -71,25 +71,32 @@ impl DiskApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
-        // Load Japanese-capable font
+        // Load CJK-capable font (platform-specific paths)
         let mut fonts = egui::FontDefinitions::default();
-        if let Ok(font_data) =
-            std::fs::read("/System/Library/Fonts/Supplemental/Arial Unicode.ttf")
-        {
-            fonts.font_data.insert(
-                "arial_unicode".to_owned(),
-                egui::FontData::from_owned(font_data).into(),
-            );
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .push("arial_unicode".to_owned());
-            fonts
-                .families
-                .entry(egui::FontFamily::Monospace)
-                .or_default()
-                .push("arial_unicode".to_owned());
+        let font_path = if cfg!(target_os = "macos") {
+            Some("/System/Library/Fonts/Supplemental/Arial Unicode.ttf")
+        } else if cfg!(target_os = "windows") {
+            Some("C:\\Windows\\Fonts\\msgothic.ttc")
+        } else {
+            None
+        };
+        if let Some(path) = font_path {
+            if let Ok(font_data) = std::fs::read(path) {
+                fonts.font_data.insert(
+                    "cjk_font".to_owned(),
+                    egui::FontData::from_owned(font_data).into(),
+                );
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Proportional)
+                    .or_default()
+                    .push("cjk_font".to_owned());
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Monospace)
+                    .or_default()
+                    .push("cjk_font".to_owned());
+            }
         }
         cc.egui_ctx.set_fonts(fonts);
 
@@ -549,7 +556,12 @@ impl DiskApp {
 
         match action {
             ContextAction::Reveal(path) => {
-                if let Err(e) = Command::new("open").arg("-R").arg(&path).spawn() {
+                let result = if cfg!(target_os = "windows") {
+                    Command::new("explorer").arg("/select,").arg(&path).spawn()
+                } else {
+                    Command::new("open").arg("-R").arg(&path).spawn()
+                };
+                if let Err(e) = result {
                     self.show_toast(&format!("Failed to reveal: {}", e));
                 }
                 self.context_menu_node = None;
