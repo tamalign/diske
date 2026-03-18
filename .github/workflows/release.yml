@@ -17,10 +17,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
-            asset_label: macos-x86_64
           - runner: macos-14
             asset_label: macos-aarch64
+          - runner: macos-15
+            asset_label: macos-x86_64
 
     steps:
       - name: Check out repository
